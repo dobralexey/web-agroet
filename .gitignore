@@ -1,0 +1,14 @@
+# Virtual Environment
+.venv/
+venv/
+
+
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+
+# Poetry local configuration
+poetry.lock  # Optional: Some prefer to commit this for reproducibility. If you do, remove this line.
+
+# IDE settings
+.idea/
