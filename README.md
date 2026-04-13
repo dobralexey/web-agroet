@@ -8,7 +8,7 @@
 
 ## 📖 Overview
 
-This application implements the **ML PT-JPL model** — an enhanced version of the Priestley-Taylor Jet Propulsion Laboratory (PT-JPL) evapotranspiration model corrected using gradient boosting machine learning (CatBoost). The model was developed and validated using eddy covariance flux tower measurements from 137 stations worldwide.
+This application implements the **ML PT-JPL model** — a modified version of the Priestley-Taylor Jet Propulsion Laboratory (PT-JPL) evapotranspiration model corrected using gradient boosting machine learning (CatBoost). The model was developed and validated using eddy covariance flux tower measurements from 137 crop stations worldwide.
 
 ### Key Features
 
