@@ -28,8 +28,6 @@ This application implements the **ML PT-JPL model** — an enhanced version of t
 
 Try the application online: **[https://agroet.streamlit.app/](https://agroet.streamlit.app/)**
 
-*Note: The online version automatically deletes temporary files after session completion to conserve server resources.*
-
 ## 📦 Installation
 
 ### Prerequisites
