@@ -24,7 +24,7 @@ This application implements the **ML PT-JPL model** — a modified version of th
 - **Data Export**: Download all results as GeoTIFF, CSV timeseries, or meteorological data (Feather format)
 - **Bilingual Interface**: Full support for English and Russian languages
 
-## 🚀 Live Demo
+## 🚀 Online Interface
 
 Try the application online: **[https://agroet.streamlit.app/](https://agroet.streamlit.app/)**
 
