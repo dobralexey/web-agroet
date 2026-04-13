@@ -53,7 +53,7 @@ pip install -r requirements.txt
 ```
 4. **Configure Google Earth Engine credentials:**
    
-Create a .streamlit/secrets.toml file with your GEE service account credentials:
+Create a .streamlit/secrets.toml file in package folder with your GEE service account credentials:
 ```bash
 [gee_service_account]
 type = "service_account"
