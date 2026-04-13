@@ -14,8 +14,8 @@ This application implements the **ML PT-JPL model** — an enhanced version of t
 
 - **Dual Area Selection**: Upload shapefiles (ZIP, GeoJSON, GeoPackage) or draw polygons directly on an interactive map
 - **Two Modeling Approaches**:
-  - **ML PT-JPL**: Machine learning-corrected energy balance model (recommended)
-  - **Original PT-JPL**: Classic physical model
+  - **ML PT-JPL**: Machine learning-corrected energy balance model PT-JPL
+  - **Original PT-JPL**: Classic PT-JPL model
 - **Multi-band Output**: 21 output bands including ET, ETc, ETs, vegetation indices, and intermediate variables
 - **Interactive Visualization**:
   - Time series plots with Savitzky-Golay smoothing
