@@ -52,6 +52,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 4. **Configure Google Earth Engine credentials:**
+   
 Create a .streamlit/secrets.toml file with your GEE service account credentials:
 ```bash
 [gee_service_account]
