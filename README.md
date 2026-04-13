@@ -41,3 +41,27 @@ Try the application online: **[https://agroet.streamlit.app/](https://agroet.str
 ```bash
 git clone https://github.com/dobralexey/web-agroet.git
 cd web-agroet
+
+2. **Create and activate a virtual environment:**
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+3. **Install dependencies:**
+```bash
+pip install -r requirements.txt
+
+4. Configure Google Earth Engine credentials:
+Create a .streamlit/secrets.toml file with your GEE service account credentials:
+```bash
+[gee_service_account]
+type = "service_account"
+project_id = "your-project-id"
+private_key_id = "your-private-key-id"
+private_key = "your-private-key"
+client_email = "your-service-account@project.iam.gserviceaccount.com"
+client_id = "your-client-id"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "your-cert-url"
