@@ -1,0 +1,48 @@
+"""
+Optional module defining useful ee datasets, bands, and
+functions for mapping to an Image Collection
+"""
+class MeteoBands:
+    """
+    Class to rename bands from 
+    https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_HOURLY#bands
+    """
+    ECMWF_ERA5_HOURLY_TSEB=(
+    [
+    'surface_pressure', 
+    'temperature_2m', 
+    'dewpoint_temperature_2m',
+    'u_component_of_wind_10m',
+    'v_component_of_wind_10m',
+    'surface_solar_radiation_downwards_hourly',
+    'surface_net_solar_radiation_hourly',
+    'surface_net_thermal_radiation_hourly',
+    'surface_thermal_radiation_downwards_hourly'
+    ],
+    [
+    'surface_pressure',
+    'air_temperature', 
+    'dewpoint_temperature',
+    'u_component_of_wind_10m',
+    'v_component_of_wind_10m',
+    'surface_solar_radiation_downwards_hourly',
+    'surface_net_solar_radiation_hourly',
+    'surface_net_thermal_radiation_hourly',
+    'surface_thermal_radiation_downwards_hourly'
+    ]
+    )
+
+class MeteoPrep:
+    def ECMWF_ERA5_HOURLY_TSEB(img):
+        # wind speed: square root of sum of squares
+        u = img.select('u_component_of_wind_10m')
+        v = img.select('v_component_of_wind_10m')
+        wind = ((u.pow(2)).add(v.pow(2))).pow(0.5).rename('wind_speed')
+
+        # solar and thermal radiation conversion to W/m2 and renaming bands
+        Sdn = img.select('surface_solar_radiation_downwards_hourly').divide(3600.0).rename('solar_radiation')
+        Rsn = img.select('surface_net_solar_radiation_hourly').divide(3600.0).rename('net_solar_radiation')
+        Ldn = img.select('surface_thermal_radiation_downwards_hourly').divide(3600.0).rename('thermal_radiation')
+        Ltn = img.select('surface_net_thermal_radiation_hourly').divide(3600.0).rename('net_thermal_radiation')
+        Rn = Rsn.add(Ltn).rename('net_radiation')
+        return img.addBands(wind).addBands(Sdn).addBands(Ldn).addBands(Rsn).addBands(Ltn).addBands(Rn)
