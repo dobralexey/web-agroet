@@ -5,6 +5,7 @@ import base64
 import shutil
 import zipfile
 import tempfile
+import logging
 import rasterio
 import numpy as np
 import pandas as pd
@@ -130,7 +131,8 @@ TRANSLATIONS = {
         "download_all_tiffs": "📥 Download TIFF Files",
         "download_meteo": "📥 Download Meteodata",
         "download_timeseries": "📥 Download Timeseries",
-        "download_single_tiff": "📥 Download This TIFF"
+        "download_single_tiff": "📥 Download This TIFF",
+        "calculation_in_progress": "Calculations in progress, please wait"
     },
     "ru": {
         "page_title": "Интерфейс модели ML PT-JPL",
@@ -236,7 +238,8 @@ TRANSLATIONS = {
         "download_all_tiffs": "📥 Скачать TIFF файлы",
         "download_meteo": "📥 Скачать метеоданные",
         "download_timeseries": "📥 Скачать временные ряды",
-        "download_single_tiff": "📥 Скачать этот TIFF"
+        "download_single_tiff": "📥 Скачать этот TIFF",
+        "calculation_in_progress": "Выполняются расчеты, пожалуйста подождите"
     }
 }
 
@@ -813,17 +816,10 @@ def main():
                     if key in st.session_state:
                         del st.session_state[key]
 
-                progress_bar = st.progress(0)
-                status_text = st.empty()
 
-                def update_progress(percent, message):
-                    """Progress callback. Must be called from the main thread.
-                    If run_et_calculation calls it from a background thread,
-                    you need to use a thread-safe mechanism (e.g., queue).
-                    """
-                    # This simple version works if callback is in the main thread
-                    progress_bar.progress(percent)
-                    status_text.text(f"{message} ({percent}%)")
+                # Безопасный колбэк, который ничего не делает с UI
+                def dummy_progress(percent, message):
+                    logging.info(f"Progress {percent}%: {message}")
 
                 try:
                     start_date_str = start_date.strftime('%Y-%m-%d')
@@ -840,18 +836,19 @@ def main():
                     st.session_state.temp_output_dir = temp_output_dir
 
                     # Run the actual processing
-                    run_et_calculation(
-                        shape_path=shape_path,
-                        start_date=start_date_str,
-                        end_date=end_date_str,
-                        method=method,
-                        max_cloud=max_cloud,
-                        out_ptjpl=out_ptjpl,
-                        out_meteo=out_meteo,
-                        progress_callback=update_progress
-                    )
+                    with st.spinner(_("calculation_in_progress")):
+                        run_et_calculation(
+                            shape_path=shape_path,
+                            start_date=start_date_str,
+                            end_date=end_date_str,
+                            method=method,
+                            max_cloud=max_cloud,
+                            out_ptjpl=out_ptjpl,
+                            out_meteo=out_meteo,
+                            progress_callback=dummy_progress
+                        )
 
-                    status_text.text(_("progress_complete"))
+                    st.success(_("progress_complete"))
 
                     # Copy shapefile to a persistent location for later map viewing
                     persistent_shp_dir = tempfile.mkdtemp(prefix='agroet_persistent_')
