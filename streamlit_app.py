@@ -670,107 +670,99 @@ def main():
     with col1:
         st.header(_("input_params"))
         input_method = st.radio(_("select_area_method"), [_("upload_shapefile"), _("draw_polygon")])
-        # shape_path and shp_file are always resolved from session_state so they
-        # survive the rerun that Streamlit triggers when any button is clicked.
-        shape_path = st.session_state.get('_shape_path')
-        shp_file   = st.session_state.get('_shp_file')
-        drawn_polygon = st.session_state.get('drawn_polygon_data')
+        shape_path = None
+        shp_file = None
+        drawn_polygon = None
         gdf = None
 
         if input_method == _("upload_shapefile"):
-            # Clear drawn-polygon state when switching to upload mode
-            st.session_state.pop('drawn_polygon_data', None)
-            drawn_polygon = None
-
             uploaded_file = st.file_uploader(_("upload_file_prompt"), type=['geojson', 'zip', 'gpkg'])
+
+            # When a new file is uploaded, store its bytes and name in session_state.
+            # This survives the rerun triggered by the button click (when uploaded_file
+            # reverts to None on Streamlit Cloud).
             if uploaded_file is not None:
-                # Identify this upload by name+size; only re-process when it's new
-                upload_key = f"{uploaded_file.name}_{uploaded_file.size}"
-                if st.session_state.get('_upload_key') != upload_key:
-                    # New file: write to a persistent temp dir and store paths in session_state
-                    old_dir = st.session_state.get('_upload_tmp_dir')
-                    if old_dir and os.path.isdir(old_dir):
-                        shutil.rmtree(old_dir, ignore_errors=True)
+                new_key = f"{uploaded_file.name}_{uploaded_file.size}"
+                if st.session_state.get('_file_key') != new_key:
+                    st.session_state['_file_key']   = new_key
+                    st.session_state['_file_name']  = uploaded_file.name
+                    st.session_state['_file_bytes'] = uploaded_file.getvalue()
+
+            # Always reconstruct shape_path from session_state bytes (works on all reruns)
+            if st.session_state.get('_file_bytes') is not None:
+                file_name  = st.session_state['_file_name']
+                file_bytes = st.session_state['_file_bytes']
+                # Only write to disk if not already done for this file
+                cached_path = st.session_state.get('_cached_shape_path')
+                if cached_path is None or not os.path.exists(cached_path):
                     tmp_dir = tempfile.mkdtemp(prefix='agroet_upload_')
                     st.session_state['_upload_tmp_dir'] = tmp_dir
-                    tmp_path = os.path.join(tmp_dir, uploaded_file.name)
+                    tmp_path = os.path.join(tmp_dir, file_name)
                     with open(tmp_path, 'wb') as f:
-                        f.write(uploaded_file.getbuffer())
+                        f.write(file_bytes)
                     try:
-                        if uploaded_file.name.endswith('.zip'):
+                        if file_name.endswith('.zip'):
                             extract_dir = os.path.join(tmp_dir, 'extracted')
                             os.makedirs(extract_dir, exist_ok=True)
                             with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
                                 zip_ref.extractall(extract_dir)
                             found_shp = None
-                            for file in os.listdir(extract_dir):
-                                if file.endswith('.shp'):
-                                    found_shp = os.path.join(extract_dir, file)
+                            for f in os.listdir(extract_dir):
+                                if f.endswith('.shp'):
+                                    found_shp = os.path.join(extract_dir, f)
                                     break
                             if found_shp is None:
                                 st.error(_("error_no_shp"))
-                                st.session_state.pop('_upload_key', None)
-                                st.session_state.pop('_shape_path', None)
-                                st.session_state.pop('_shp_file', None)
+                                st.session_state['_file_bytes'] = None
                             else:
                                 gdf = gpd.read_file(found_shp)
-                                st.session_state['_upload_key']  = upload_key
-                                st.session_state['_shape_path']  = found_shp
-                                st.session_state['_shp_file']    = found_shp
-                                st.session_state['_gdf_nfeat']   = len(gdf)
-                                st.session_state['_gdf_crs']     = str(gdf.crs)
-                        elif uploaded_file.name.endswith('.geojson'):
+                                shape_path = found_shp
+                                shp_file   = found_shp
+                                st.session_state['_cached_shape_path'] = found_shp
+                                st.session_state['_cached_shp_file']   = found_shp
+                                st.session_state['_gdf_nfeat'] = len(gdf)
+                                st.session_state['_gdf_crs']   = str(gdf.crs)
+                        elif file_name.endswith('.geojson') or file_name.endswith('.gpkg'):
                             gdf = gpd.read_file(tmp_path)
-                            st.session_state['_upload_key']  = upload_key
-                            st.session_state['_shape_path']  = tmp_path
-                            st.session_state['_shp_file']    = tmp_path
-                            st.session_state['_gdf_nfeat']   = len(gdf)
-                            st.session_state['_gdf_crs']     = str(gdf.crs)
-                        elif uploaded_file.name.endswith('.gpkg'):
-                            gdf = gpd.read_file(tmp_path)
-                            st.session_state['_upload_key']  = upload_key
-                            st.session_state['_shape_path']  = tmp_path
-                            st.session_state['_shp_file']    = tmp_path
-                            st.session_state['_gdf_nfeat']   = len(gdf)
-                            st.session_state['_gdf_crs']     = str(gdf.crs)
+                            shape_path = tmp_path
+                            shp_file   = tmp_path
+                            st.session_state['_cached_shape_path'] = tmp_path
+                            st.session_state['_cached_shp_file']   = tmp_path
+                            st.session_state['_gdf_nfeat'] = len(gdf)
+                            st.session_state['_gdf_crs']   = str(gdf.crs)
                     except Exception as e:
                         st.error(_("error_read_file") + str(e))
-                        st.session_state.pop('_upload_key', None)
-                        st.session_state.pop('_shape_path', None)
-                        st.session_state.pop('_shp_file', None)
-
-                # Always refresh local vars from session_state (covers the rerun-after-click case)
-                shape_path = st.session_state.get('_shape_path')
-                shp_file   = st.session_state.get('_shp_file')
+                        st.session_state['_file_bytes'] = None
+                else:
+                    # File already on disk from a previous rerun — just restore paths
+                    shape_path = cached_path
+                    shp_file   = st.session_state.get('_cached_shp_file', cached_path)
 
                 if shape_path:
-                    if uploaded_file.name.endswith('.zip'):
+                    if file_name.endswith('.zip'):
                         st.success(_("shapefile_loaded_zip") + os.path.basename(shape_path))
-                    elif uploaded_file.name.endswith('.geojson'):
-                        st.success(_("geojson_loaded") + uploaded_file.name)
-                    elif uploaded_file.name.endswith('.gpkg'):
-                        st.success(_("gpkg_loaded") + uploaded_file.name)
+                    elif file_name.endswith('.geojson'):
+                        st.success(_("geojson_loaded") + file_name)
+                    elif file_name.endswith('.gpkg'):
+                        st.success(_("gpkg_loaded") + file_name)
                     st.write(_("num_features") + str(st.session_state.get('_gdf_nfeat', '')))
                     st.write(_("crs_label") + str(st.session_state.get('_gdf_crs', '')))
             else:
-                # File uploader cleared — wipe persisted state
-                for k in ['_upload_key', '_shape_path', '_shp_file', '_gdf_nfeat', '_gdf_crs']:
+                # No file in session — clear any stale cached paths
+                for k in ['_file_key', '_file_name', '_cached_shape_path', '_cached_shp_file',
+                          '_gdf_nfeat', '_gdf_crs']:
                     st.session_state.pop(k, None)
-                shape_path = None
-                shp_file   = None
 
         else:
-            # Draw polygon mode — clear upload state
-            for k in ['_upload_key', '_shape_path', '_shp_file', '_gdf_nfeat', '_gdf_crs']:
+            # Switched to draw mode — clear upload state
+            for k in ['_file_key', '_file_name', '_file_bytes', '_cached_shape_path',
+                      '_cached_shp_file', '_gdf_nfeat', '_gdf_crs']:
                 st.session_state.pop(k, None)
-            shape_path = None
-            shp_file   = None
-
             drawn_polygon = draw_polygon_map()
             if drawn_polygon:
                 st.success(_("polygon_drawn"))
                 st.session_state['drawn_polygon_data'] = drawn_polygon
-            elif st.session_state.get('drawn_polygon_data'):
+            elif 'drawn_polygon_data' in st.session_state:
                 drawn_polygon = st.session_state['drawn_polygon_data']
                 st.success(_("polygon_loaded"))
         st.subheader(_("date_range"))
@@ -798,13 +790,13 @@ def main():
         st.markdown("---")
         run_button = st.button(_("run_button"), type="primary", use_container_width=True)
         if run_button:
-            # Re-read from session_state in case the rerun reset local vars
-            if not shape_path and input_method == _("upload_shapefile"):
-                shape_path = st.session_state.get('_shape_path')
-                shp_file   = st.session_state.get('_shp_file')
-            if not drawn_polygon and input_method == _("draw_polygon"):
+            # Recover shape_path/drawn_polygon from session_state in case
+            # the widget rerun reset them to None (happens on Streamlit Cloud)
+            if input_method == _("upload_shapefile") and not shape_path:
+                shape_path = st.session_state.get('_cached_shape_path')
+                shp_file   = st.session_state.get('_cached_shp_file', shape_path)
+            if input_method == _("draw_polygon") and not drawn_polygon:
                 drawn_polygon = st.session_state.get('drawn_polygon_data')
-
             errors = []
             if input_method == _("upload_shapefile") and not shape_path:
                 errors.append(_("errors_upload"))
@@ -819,7 +811,7 @@ def main():
                     st.error(f"❌ {error}")
             else:
                 temp_shape_path = None
-                shp_file = shp_file or shape_path  # ensure always defined
+                shp_file = st.session_state.get('_cached_shp_file', shape_path)
                 if input_method == _("draw_polygon") and drawn_polygon:
                     temp_shape_dir = tempfile.mkdtemp(prefix='agroet_drawn_')
                     temp_shape_path = os.path.join(temp_shape_dir, 'drawn_polygon.shp')
