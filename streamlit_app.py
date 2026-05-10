@@ -5,6 +5,7 @@ import base64
 import shutil
 import zipfile
 import tempfile
+import warnings
 import logging
 import rasterio
 import numpy as np
