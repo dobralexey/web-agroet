@@ -25,6 +25,8 @@ from datetime import date, datetime
 from src.web_agroet.main import run_et_calculation
 from scipy.signal import savgol_filter
 
+logging.getLogger("rasterio").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", category=UserWarning, module="rasterio")
 
 TRANSLATIONS = {
     "en": {
