@@ -274,11 +274,9 @@ def _(key, **kwargs):
     return text
 
 
-def initialize_gee(gee_project: str):
-    """Initialize GEE using service account credentials from Streamlit secrets."""
-    if st.session_state.get("gee_initialized"):
-        return
-
+@st.cache_resource(ttl=3600)  # Кэш на 1 час
+def init_gee_cached(gee_project: str):
+    """Инициализация GEE с кэшированием для облачного хостинга"""
     try:
         if "gee_service_account" in st.secrets:
             credentials_dict = dict(st.secrets["gee_service_account"])
@@ -289,10 +287,28 @@ def initialize_gee(gee_project: str):
             ee.Initialize(credentials=credentials, project=gee_project)
         else:
             ee.Initialize(project=gee_project)
-        st.session_state["gee_initialized"] = True
+        return True
     except Exception as e:
         st.error(_("gee_init_failed") + str(e))
+        return False
+
+def initialize_gee(gee_project: str):
+    """Обёртка для инициализации с проверкой"""
+    if not init_gee_cached(gee_project):
         st.stop()
+
+def validate_temp_paths():
+    """Проверяет, существуют ли временные пути из session_state"""
+    required_keys = ['results_tiff_folder', 'results_shp_file', 'results_meteo_file']
+    for key in required_keys:
+        if key in st.session_state:
+            path = st.session_state[key]
+            if isinstance(path, str) and not os.path.exists(path):
+                # Путь не существует — очищаем состояние
+                for k in required_keys + ['results_df', 'results_meteo_df', 'results_shp_persistent_dir']:
+                    st.session_state.pop(k, None)
+                return False
+    return True
 
 BAND_NAMES = {
     1: "SR_B1 - Coastal/Aerosol",
@@ -652,6 +668,11 @@ def results_section(tiff_folder, shape_file):
 
 def main():
     st.set_page_config(page_title=_("page_title"), page_icon=_("page_icon"), layout="wide")
+    validate_temp_paths()
+    if 'gee_initialized' in st.session_state and not ee.data._initialized:
+        # GEE инициализирован в сессии, но не в текущем процессе — переинициализируем
+        initialize_gee("ee-dobralexey")
+
     with st.sidebar:
         lang = st.selectbox(_("language_selector"), options=["en", "ru"],
                             format_func=lambda x: TRANSLATIONS[x]["en" if x == "en" else "ru"],
