@@ -344,8 +344,8 @@ def draw_polygon_map():
     selected = st.selectbox(_("map_background"), list(tile_options.keys()))
 
     m = folium.Map(
-        location=[49.278824, 45.182275],
-        zoom_start=11,
+        location=[51.546516, 46.839902],
+        zoom_start=13,
         tiles=tile_options[selected],
         attr="Google" if "google" in selected.lower() else None
     )
@@ -676,6 +676,10 @@ def main():
         if input_method == _("upload_shapefile"):
             uploaded_file = st.file_uploader(_("upload_file_prompt"), type=['geojson', 'zip', 'gpkg'])
             if uploaded_file:
+                # Clear stale session state whenever a new file is uploaded
+                for _k in ['shape_path', 'shp_file', 'uploaded_file_name']:
+                    st.session_state.pop(_k, None)
+
                 temp_dir = tempfile.mkdtemp()
                 temp_path = os.path.join(temp_dir, uploaded_file.name)
                 with open(temp_path, 'wb') as f:
@@ -696,16 +700,25 @@ def main():
                         else:
                             gdf = gpd.read_file(shp_file)
                             shape_path = shp_file
+                            st.session_state['shape_path'] = shape_path
+                            st.session_state['shp_file'] = shp_file
+                            st.session_state['uploaded_file_name'] = uploaded_file.name
                             st.success(_("shapefile_loaded_zip") + os.path.basename(shp_file))
                     elif uploaded_file.name.endswith('.geojson'):
                         gdf = gpd.read_file(temp_path)
                         shape_path = temp_path
                         shp_file = shape_path
+                        st.session_state['shape_path'] = shape_path
+                        st.session_state['shp_file'] = shp_file
+                        st.session_state['uploaded_file_name'] = uploaded_file.name
                         st.success(_("geojson_loaded") + uploaded_file.name)
                     elif uploaded_file.name.endswith('.gpkg'):
                         gdf = gpd.read_file(temp_path)
                         shape_path = temp_path
                         shp_file = shape_path
+                        st.session_state['shape_path'] = shape_path
+                        st.session_state['shp_file'] = shp_file
+                        st.session_state['uploaded_file_name'] = uploaded_file.name
                         st.success(_("gpkg_loaded") + uploaded_file.name)
                 except Exception as e:
                     st.error(_("error_read_file") + str(e))
@@ -714,6 +727,11 @@ def main():
                 if gdf is not None:
                     st.write(_("num_features") + str(len(gdf)))
                     st.write(_("crs_label") + str(gdf.crs))
+            # Restore shape_path/shp_file from session state if not set in this run
+            # (happens on the rerun triggered by clicking the button)
+            if shape_path is None and 'shape_path' in st.session_state:
+                shape_path = st.session_state['shape_path']
+                shp_file = st.session_state.get('shp_file', shape_path)
         else:
             drawn_polygon = draw_polygon_map()
             if drawn_polygon:

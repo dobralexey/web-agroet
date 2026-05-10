@@ -83,7 +83,7 @@ def relative_humidity(temperature, dewpoint_temperature, band_name='relative_hum
 def vpd(RH, Temp_K, band_name=None):
     '''
     Function to compute the vapor pressure deficit in kPa.
-    Inputs:
+    Inputsmet_params:
         - RH (numpy array or ee.Image): the relative humidity [0-100].
         - Temp_K (numpy array or ee.Image): array with the temperature
         values in Kelvin.         
