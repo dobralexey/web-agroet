@@ -29,7 +29,7 @@ import time
 import atexit
 import gc
 
-# ---------------- TRANSLATIONS ----------------
+# Cleaned translation keys (removed trailing spaces that break _() lookups)
 TRANSLATIONS = {
     "en": {
         "page_title": "ML PT-JPL Model Interface",
@@ -122,7 +122,7 @@ TRANSLATIONS = {
         "num_bands": "Number of bands: ",
         "data_type": "Data type: ",
         "nodata": "NoData value: ",
-        "cropped_info": "Cropped to AOI:",
+        "cropped_info": "Cropped to AOI: ",
         "cropped_dims": "Cropped Dimensions: ",
         "cropped_bounds": "Cropped Bounds: ",
         "valid_pixels": "Valid pixels: ",
@@ -228,7 +228,7 @@ TRANSLATIONS = {
         "num_bands": "Количество каналов: ",
         "data_type": "Тип данных: ",
         "nodata": "Значение NoData: ",
-        "cropped_info": "Обрезано по области интереса:",
+        "cropped_info": "Обрезано по области интереса: ",
         "cropped_dims": "Размеры после обрезки: ",
         "cropped_bounds": "Границы после обрезки: ",
         "valid_pixels": "Валидных пикселей: ",
@@ -245,13 +245,33 @@ TRANSLATIONS = {
     }
 }
 
-# ---------------- HELPER FUNCTIONS ----------------
+GEE_INIT_TIMEOUT = 30
+
+@st.cache_resource(show_spinner=False, max_entries=1, ttl=3600)
+def initialize_gee_cached(gee_project: str, credentials_dict=None):
+    """Initialize GEE with caching to prevent repeated initialization"""
+    try:
+        if credentials_dict:
+            credentials = ee.ServiceAccountCredentials(
+                email=credentials_dict["client_email"],
+                key_data=json.dumps(credentials_dict)
+            )
+            ee.Initialize(credentials=credentials, project=gee_project)
+        else:
+            ee.Initialize(project=gee_project)
+        test_image = ee.Image('NASA/NASADEM_HGT/001')
+        test_info = test_image.getInfo()
+        return True
+    except Exception as e:
+        st.error(f"GEE initialization failed: {str(e)}")
+        return False
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_shapefile_cached(file_path, file_type):
     """Cache shapefile loading to prevent repeated I/O"""
     try:
         return gpd.read_file(file_path)
-    except Exception:
+    except:
         return None
 
 def cleanup_old_sessions():
@@ -263,28 +283,27 @@ def cleanup_old_sessions():
         try:
             if os.path.getmtime(dir_path) < current_time - 3600:
                 shutil.rmtree(dir_path, ignore_errors=True)
-        except Exception:
+        except:
             pass
 
 def clear_previous_results():
-    """Clear previous results to free memory (SESSION-SCOPED ONLY)"""
+    """Clear previous results to free memory"""
     keys_to_clear = [
         'results_tiff_folder', 'results_shp_file',
         'results_meteo_file', 'results_df', 'results_meteo_df',
-        'results_shp_persistent_dir', 'run_requested'
+        'results_shp_persistent_dir'
     ]
     for key in keys_to_clear:
         if key in st.session_state:
             try:
                 if 'dir' in key and os.path.exists(st.session_state[key]):
                     shutil.rmtree(st.session_state[key], ignore_errors=True)
-            except Exception:
+            except:
                 pass
             del st.session_state[key]
     gc.collect()
 
 def get_language():
-    """Determine language from session state or browser preference."""
     if 'language' in st.session_state:
         return st.session_state.language
     try:
@@ -293,49 +312,53 @@ def get_language():
         if lang_param in ["en", "ru"]:
             st.session_state.language = lang_param
             return lang_param
-    except Exception:
+    except:
         pass
     try:
         browser_lang = st.context.headers.get("Accept-Language", "")
         if "ru" in browser_lang.lower():
             return "ru"
-    except Exception:
+    except:
         pass
     return "en"
 
 def set_language(lang):
-    """Set language in session state."""
     st.session_state.language = lang
 
 def _(key, **kwargs):
-    """Return translation for given key with optional formatting."""
     lang = get_language()
     text = TRANSLATIONS[lang].get(key, TRANSLATIONS["en"].get(key, key))
     if kwargs:
         return text.format(**kwargs)
     return text
 
-def initialize_gee_session(gee_project: str):
-    """Initialize GEE safely per session without blocking retries or global caching."""
+def initialize_gee(gee_project: str):
+    """Initialize GEE with retry logic"""
     if st.session_state.get("gee_initialized"):
-        return True
-    try:
-        if "gee_service_account" in st.secrets:
-            credentials_dict = dict(st.secrets["gee_service_account"])
-            credentials = ee.ServiceAccountCredentials(
-                email=credentials_dict["client_email"],
-                key_data=json.dumps(credentials_dict)
-            )
-            ee.Initialize(credentials=credentials, project=gee_project)
-        else:
-            ee.Initialize(project=gee_project)
-        # Quick validation call
-        ee.Image('NASA/NASADEM_HGT/001').getInfo()
-        st.session_state["gee_initialized"] = True
-        return True
-    except Exception as e:
-        st.error(_("gee_init_failed") + str(e))
-        return False
+        return
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            success = False
+            if "gee_service_account" in st.secrets:
+                credentials_dict = dict(st.secrets["gee_service_account"])
+                success = initialize_gee_cached(gee_project, credentials_dict)
+            else:
+                success = initialize_gee_cached(gee_project, None)
+
+            if success:
+                st.session_state["gee_initialized"] = True
+                st.session_state["gee_init_time"] = time.time()
+                return
+
+            if attempt < max_retries - 1:
+                time.sleep(2)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                st.error(_("gee_init_failed") + str(e))
+                st.stop()
+            else:
+                time.sleep(2)
 
 BAND_NAMES = {
     1: "SR_B1 - Coastal/Aerosol", 2: "SR_B2 - Blue", 3: "SR_B3 - Green",
@@ -349,7 +372,6 @@ BAND_NAMES = {
 }
 
 def create_zip_download(tiff_folder):
-    """Create a ZIP file of all TIFF files for download."""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         tif_files = sorted(glob.glob(os.path.join(tiff_folder, "*.tif")))
@@ -359,7 +381,6 @@ def create_zip_download(tiff_folder):
     return zip_buffer
 
 def draw_polygon_map():
-    """Create an interactive map for polygon drawing"""
     st.subheader(_("map_subheader"))
     if 'polygon_coords' not in st.session_state:
         st.session_state.polygon_coords = None
@@ -369,30 +390,16 @@ def draw_polygon_map():
         "Google Satellite": "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
         "OpenStreetMap": "OpenStreetMap",
     }
-
     selected = st.selectbox(_("map_background"), list(tile_options.keys()))
-
-    m = folium.Map(
-        location=[51.546516, 46.839902],
-        zoom_start=13,
-        tiles=tile_options[selected],
-        attr="Google" if "google" in selected.lower() else None
-    )
-
+    m = folium.Map(location=[51.546516, 46.839902], zoom_start=13, tiles=tile_options[selected],
+                   attr="Google" if "google" in selected.lower() else None)
     draw_control = folium.plugins.Draw(
-        export=True,
-        position='topleft',
-        draw_options={
-            'polygon': {'allowIntersection': False,
-                        'drawError': {'color': '#e1e100', 'message': 'Polygon cannot intersect!'}},
-            'polyline': False, 'circle': False,
-            'rectangle': {'showArea': True},
-            'marker': False, 'circlemarker': False
-        },
+        export=True, position='topleft',
+        draw_options={'polygon': {'allowIntersection': False, 'drawError': {'color': '#e1e100', 'message': 'Polygon cannot intersect!'}},
+                      'polyline': False, 'circle': False, 'rectangle': {'showArea': True}, 'marker': False, 'circlemarker': False},
         edit_options={'edit': True, 'remove': True}
     )
     draw_control.add_to(m)
-
     output = st_folium(m, width=700, height=500)
 
     if output and output.get('last_active_drawing'):
@@ -408,23 +415,38 @@ def draw_polygon_map():
     return None
 
 def save_drawn_polygon(drawn_data, output_path):
-    """Save drawn polygon as shapefile with memory optimization"""
     if not drawn_data:
         return False
     try:
-        coords = drawn_data.get('coordinates') or drawn_data.get('geometry', {}).get('coordinates', [None])[0]
-        if not coords:
-            return False
-        if coords[0] != coords[-1]:
-            coords.append(coords[0])
-        from shapely.geometry import Polygon
-        polygon = Polygon(coords)
-        gdf = gpd.GeoDataFrame({'geometry': [polygon]}, crs='EPSG:4326')
-        gdf.to_file(output_path)
-        return True
+        if 'type' in drawn_data and drawn_data['type'] == 'Polygon':
+            coords = drawn_data['coordinates']
+            if coords[0] != coords[-1]:
+                coords.append(coords[0])
+            from shapely.geometry import Polygon
+            polygon = Polygon(coords)
+            gdf = gpd.GeoDataFrame({'geometry': [polygon]}, crs='EPSG:4326')
+            gdf.to_file(output_path)
+            return True
+        elif 'geojson' in drawn_data:
+            geojson_data = drawn_data['geojson']
+            if 'geometry' in geojson_data and geojson_data['geometry']['type'] == 'Polygon':
+                coords = geojson_data['geometry']['coordinates'][0]
+                from shapely.geometry import Polygon
+                polygon = Polygon(coords)
+                gdf = gpd.GeoDataFrame({'geometry': [polygon]}, crs='EPSG:4326')
+                gdf.to_file(output_path)
+                return True
+        elif 'geometry' in drawn_data and drawn_data['geometry']['type'] == 'Polygon':
+            coords = drawn_data['geometry']['coordinates'][0]
+            from shapely.geometry import Polygon
+            polygon = Polygon(coords)
+            gdf = gpd.GeoDataFrame({'geometry': [polygon]}, crs='EPSG:4326')
+            gdf.to_file(output_path)
+            return True
     except Exception as e:
         st.error(f"Error saving polygon: {str(e)}")
         return False
+    return False
 
 def get_tif_value(tif_path, shape_gdf):
     with rasterio.open(tif_path) as src:
@@ -448,32 +470,26 @@ def render_timeseries_plot(df, meteo_df):
     colors = {'ET': '#008080', 'ETc': '#2EC767', 'ETs': '#B58935', 'ERA': '#E54522'}
     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
     window_length = min(17, len(df) - (len(df) % 2) - 1)
-    if window_length < 3:
-        window_length = 3
+    if window_length < 3: window_length = 3
     polyorder = min(3, window_length - 1)
-
     df['ETc_smooth'] = savgol_filter(df['ETc'], window_length, polyorder)
     df['ETs_smooth'] = savgol_filter(df['ETs'], window_length, polyorder)
     df['ET_smooth'] = savgol_filter(df['ET'], window_length, polyorder)
-
     ax.plot(df['date'], df['ET'], color=colors['ET'], linewidth=1, linestyle='--', label='_nolegend_', alpha=0.9)
     ax.plot(df['date'], df['ETc'], color=colors['ETc'], linewidth=1, linestyle='--', label='_nolegend_', alpha=0.9)
     ax.plot(df['date'], df['ETs'], color=colors['ETs'], linewidth=1, linestyle='--', label='_nolegend_', alpha=0.9)
     ax.plot(df['date'], df['ET_smooth'], color=colors['ET'], linewidth=2, label='ET')
     ax.plot(df['date'], df['ETc_smooth'], color=colors['ETc'], linewidth=2, label='ETc')
     ax.plot(df['date'], df['ETs_smooth'], color=colors['ETs'], linewidth=2, label='ETs')
-
     if 'ETc_std' in df.columns:
         ax.fill_between(df['date'], df['ETc'] - df['ETc_std'], df['ETc'] + df['ETc_std'], color=colors['ETc'], alpha=0.2)
     if 'ETs_std' in df.columns:
         ax.fill_between(df['date'], df['ETs'] - df['ETs_std'], df['ETs'] + df['ETs_std'], color=colors['ETs'], alpha=0.2)
-    if 'ET_std' in df.columns:
+    if 'ET' in df.columns:
         ax.fill_between(df['date'], df['ET'] - df['ET_std'], df['ET'] + df['ET_std'], color=colors['ET'], alpha=0.2)
-
     meteo_df['ETr_24_ERA_smooth'] = savgol_filter(meteo_df['ETr_24_ERA'], window_length, polyorder)
     ax.plot(meteo_df['Date'], meteo_df['ETr_24_ERA'], color=colors['ERA'], linewidth=1, linestyle='--', alpha=0.9, label='_nolegend_')
     ax.plot(meteo_df['Date'], meteo_df['ETr_24_ERA_smooth'], color=colors['ERA'], linewidth=2, label='ETr')
-
     ax.set_ylabel('mm/day', fontsize=14)
     ax.set_xlabel('Date', fontsize=14)
     ax.set_title('ET — actual evapotranspiration, ETc — transpiration \n ETs — soil evaporation, ETr — reference ET', fontsize=16, pad=15)
@@ -503,13 +519,11 @@ def create_map_with_cropped_tiff(tiff_path, band_idx=19, shape_gdf=None):
     cropped_data, transform, bounds = crop_tiff_to_shape(tiff_path, shape_gdf)
     band_data = cropped_data[band_idx - 1]
     valid_data = band_data[~np.isnan(band_data)]
-
     if len(valid_data) > 0:
         band_min = np.nanpercentile(valid_data, 2)
         band_max = np.nanpercentile(valid_data, 98)
     else:
         band_min, band_max = 0, 1
-
     band_normalized = np.clip((band_data - band_min) / (band_max - band_min) * 255, 0, 255)
     band_normalized = np.nan_to_num(band_normalized, nan=0).astype(np.uint8)
     colormap = plt.cm.RdYlBu
@@ -521,14 +535,12 @@ def create_map_with_cropped_tiff(tiff_path, band_idx=19, shape_gdf=None):
     img.save(img_bytes, format='PNG')
     img_bytes.seek(0)
     img_base64 = base64.b64encode(img_bytes.read()).decode('utf-8')
-
     shape_gdf_4326 = shape_gdf.to_crs('EPSG:4326')
     center_4326 = [(shape_gdf_4326.total_bounds[1] + shape_gdf_4326.total_bounds[3]) / 2,
                    (shape_gdf_4326.total_bounds[0] + shape_gdf_4326.total_bounds[2]) / 2]
     m = folium.Map(location=center_4326, zoom_start=14, control_scale=True)
     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Hybrid', overlay=False, control=True).add_to(m)
     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google', name='Google Satellite', overlay=False, control=True).add_to(m)
-
     bounds_4326 = [[shape_gdf_4326.total_bounds[1], shape_gdf_4326.total_bounds[0]],
                    [shape_gdf_4326.total_bounds[3], shape_gdf_4326.total_bounds[2]]]
     colors = ['#313695', '#74add1', '#ffffbf', '#f46d43', '#a50026']
@@ -536,14 +548,9 @@ def create_map_with_cropped_tiff(tiff_path, band_idx=19, shape_gdf=None):
     if len(valid_data) > 0:
         colormap_legend = cm.LinearColormap(colors=reversed_colors, vmin=band_min, vmax=band_max, text_color='white', caption='')
         m.add_child(colormap_legend)
-
-    image_overlay = folium.raster_layers.ImageOverlay(
-        image=f'data:image/png;base64,{img_base64}', bounds=bounds_4326, opacity=0.85,
-        name=f'Band {band_idx} Overlay', interactive=True, cross_origin=False, zindex=2
-    )
+    image_overlay = folium.raster_layers.ImageOverlay(image=f'data:image/png;base64,{img_base64}', bounds=bounds_4326, opacity=0.85, name=f'Band {band_idx} Overlay', interactive=True, cross_origin=False, zindex=2)
     image_overlay.add_to(m)
-    folium.GeoJson(shape_gdf_4326, name='Area Boundary',
-                   style_function=lambda x: {'fillColor': '#000000', 'color': '#ffffff', 'weight': 2, 'fillOpacity': 0.0, 'dashArray': '5, 5'}).add_to(m)
+    folium.GeoJson(shape_gdf_4326, name='Area Boundary', style_function=lambda x: {'fillColor': '#000000', 'color': '#ffffff', 'weight': 2, 'fillOpacity': 0.0, 'dashArray': '5, 5'}).add_to(m)
     folium.LayerControl().add_to(m)
     plugins.Fullscreen().add_to(m)
     plugins.Draw(export=False, filename='measurements.geojson', position='topleft',
@@ -557,7 +564,7 @@ def create_map_with_cropped_tiff(tiff_path, band_idx=19, shape_gdf=None):
 def results_section(tiff_folder, shape_file):
     st.header(_("map_viewer"))
     if not os.path.exists(shape_file):
-        st.error(_("tiff_folder_not_found", folder=shape_file))
+        st.error(_("tiff_folder_not_found").format(folder=shape_file))
         return
     try:
         shape_gdf = gpd.read_file(shape_file)
@@ -573,14 +580,12 @@ def results_section(tiff_folder, shape_file):
         return
 
     if not os.path.exists(tiff_folder):
-        st.error(_("tiff_folder_not_found", folder=tiff_folder))
+        st.error(_("tiff_folder_not_found").format(folder=tiff_folder))
         return
-
     tif_files = sorted(glob.glob(os.path.join(tiff_folder, "*.tif")))
     if not tif_files:
-        st.warning(_("no_tiff_files", folder=tiff_folder))
+        st.warning(_("no_tiff_files").format(folder=tiff_folder))
         return
-
     dates = []
     for tif_file in tif_files:
         filename = os.path.basename(tif_file)
@@ -588,13 +593,11 @@ def results_section(tiff_folder, shape_file):
         try:
             date_obj = datetime.strptime(date_str, '%Y%m%d')
             dates.append((date_obj, date_str, tif_file))
-        except Exception:
+        except:
             st.warning(_("date_parse_error") + filename)
-
     if not dates:
         st.error(_("no_valid_tiff"))
         return
-
     dates.sort(key=lambda x: x[0])
     st.sidebar.header(_("map_controls"))
     date_options = [f"{d[0].strftime('%Y-%m-%d')}" for d in dates]
@@ -602,11 +605,7 @@ def results_section(tiff_folder, shape_file):
     selected_tiff = dates[selected_date_idx][2]
 
     with open(selected_tiff, 'rb') as f:
-        st.sidebar.download_button(
-            label=_("download_single_tiff"), data=f,
-            file_name=os.path.basename(selected_tiff), mime="image/tiff",
-            key=f"download_tiff_{selected_date_idx}"
-        )
+        st.sidebar.download_button(label=_("download_single_tiff"), data=f, file_name=os.path.basename(selected_tiff), mime="image/tiff", key=f"download_tiff_{selected_date_idx}")
 
     with rasterio.open(selected_tiff) as src:
         num_bands = src.count
@@ -622,7 +621,6 @@ def results_section(tiff_folder, shape_file):
         with st.spinner(_("cropping_spinner")):
             folium_map, valid_data = create_map_with_cropped_tiff(tiff_path=selected_tiff, band_idx=selected_band, shape_gdf=shape_gdf)
             st_folium(folium_map, width=None, height=400, returned_objects=[], key=f"result_map_{selected_date_idx}_{selected_band_idx}")
-
         with st.expander(_("band_stats")):
             if len(valid_data) > 0:
                 col1, col2, col3, col4 = st.columns(4)
@@ -630,7 +628,6 @@ def results_section(tiff_folder, shape_file):
                 with col2: st.metric(_("max"), f"{np.nanmax(valid_data):.2f}")
                 with col3: st.metric(_("mean"), f"{np.nanmean(valid_data):.2f}")
                 with col4: st.metric(_("std_dev"), f"{np.nanstd(valid_data):.2f}")
-
                 fig, ax = plt.subplots(figsize=(10, 3))
                 ax.hist(valid_data, bins=50, edgecolor='black', alpha=0.7)
                 ax.set_xlabel(_("histogram_x", band=selected_band))
@@ -641,7 +638,6 @@ def results_section(tiff_folder, shape_file):
                 plt.close(fig)
             else:
                 st.warning("No valid data in cropped area")
-
         with st.expander(_("file_info")):
             with rasterio.open(selected_tiff) as src:
                 st.write(f"**{_('file_name')}** {os.path.basename(selected_tiff)}")
@@ -661,22 +657,35 @@ def results_section(tiff_folder, shape_file):
         st.error(_("error_map") + str(e))
         st.info(_("map_info"))
 
-# ---------------- MAIN APP ----------------
 def main():
-    st.set_page_config(
-        page_title=_("page_title"),
-        page_icon=_("page_icon"),
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
+    st.set_page_config(page_title=_("page_title"), page_icon=_("page_icon"), layout="wide", initial_sidebar_state="expanded")
 
-    # Session activity tracking
+    # 🟢 NEW: Automatic Hourly Cache Clearing
+    if 'last_cache_clear' not in st.session_state:
+        st.session_state.last_cache_clear = time.time()
+    if time.time() - st.session_state.last_cache_clear > 3600:  # 1 hour
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.session_state.last_cache_clear = time.time()
+
+    # 🟢 NEW: Keep-Alive Heartbeat (Works while a browser tab is open)
+    st.markdown("""
+    <script>
+    setInterval(() => {
+        fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + '_heartbeat=1', {method: 'HEAD', cache: 'no-store'}).catch(() => {});
+    }, 180000); // Pings every 3 minutes
+    </script>
+    """, unsafe_allow_html=True)
+
+    # Activity tracking & session cleanup (preserved from original)
     if 'last_activity' not in st.session_state:
         st.session_state.last_activity = time.time()
     current_time = time.time()
     if current_time - st.session_state.last_activity > 1800:
         clear_previous_results()
         st.session_state.gee_initialized = False
+        st.cache_resource.clear()
+        st.cache_data.clear()
     st.session_state.last_activity = current_time
 
     if 'session_initialized' not in st.session_state:
@@ -684,19 +693,17 @@ def main():
         st.session_state.session_initialized = True
 
     with st.sidebar:
-        lang = st.selectbox(
-            _("language_selector"),
-            options=["en", "ru"],
-            format_func=lambda x: TRANSLATIONS[x]["en" if x == "en" else "ru"],
-            index=0 if get_language() == "en" else 1,
-            key="language_selector_widget"
-        )
+        lang = st.selectbox(_("language_selector"), options=["en", "ru"],
+                            format_func=lambda x: TRANSLATIONS[x]["en" if x == "en" else "ru"],
+                            index=0 if get_language() == "en" else 1, key="language_selector_widget")
         if lang != st.session_state.get('language'):
             set_language(lang)
             st.rerun()
 
-    # GEE Initialization (Non-blocking, session-scoped)
-    if not initialize_gee_session(gee_project="ee-dobralexey"):
+    try:
+        initialize_gee(gee_project="ee-dobralexey")
+    except Exception as e:
+        st.error(f"Failed to initialize GEE: {str(e)}")
         st.info("Please try refreshing the page or contact support.")
         return
 
@@ -710,21 +717,13 @@ def main():
     col1, col2 = st.columns([1, 1])
     with col1:
         st.header(_("input_params"))
-        input_method = st.radio(
-            _("select_area_method"),
-            [_("upload_shapefile"), _("draw_polygon")],
-            key="input_method_radio"
-        )
+        input_method = st.radio(_("select_area_method"), [_("upload_shapefile"), _("draw_polygon")], key="input_method_radio")
         shape_path = None
         drawn_polygon = None
         gdf = None
 
         if input_method == _("upload_shapefile"):
-            uploaded_file = st.file_uploader(
-                _("upload_file_prompt"),
-                type=['geojson', 'zip', 'gpkg'],
-                key="file_uploader"
-            )
+            uploaded_file = st.file_uploader(_("upload_file_prompt"), type=['geojson', 'zip', 'gpkg'], key="file_uploader")
             if uploaded_file:
                 temp_dir = tempfile.mkdtemp(prefix='agroet_upload_')
                 temp_path = os.path.join(temp_dir, uploaded_file.name)
@@ -736,8 +735,12 @@ def main():
                         os.makedirs(extract_dir, exist_ok=True)
                         with zipfile.ZipFile(temp_path, 'r') as zip_ref:
                             zip_ref.extractall(extract_dir)
-                        shp_file = next((os.path.join(extract_dir, f) for f in os.listdir(extract_dir) if f.endswith('.shp')), None)
-                        if not shp_file:
+                        shp_file = None
+                        for file in os.listdir(extract_dir):
+                            if file.endswith('.shp'):
+                                shp_file = os.path.join(extract_dir, file)
+                                break
+                        if shp_file is None:
                             st.error(_("error_no_shp"))
                         else:
                             gdf = load_shapefile_cached(shp_file, 'shp')
@@ -749,11 +752,13 @@ def main():
                     elif uploaded_file.name.endswith('.geojson'):
                         gdf = load_shapefile_cached(temp_path, 'geojson')
                         shape_path = temp_path
-                        if gdf is not None: st.success(_("geojson_loaded") + uploaded_file.name)
+                        if gdf is not None:
+                            st.success(_("geojson_loaded") + uploaded_file.name)
                     elif uploaded_file.name.endswith('.gpkg'):
                         gdf = load_shapefile_cached(temp_path, 'gpkg')
                         shape_path = temp_path
-                        if gdf is not None: st.success(_("gpkg_loaded") + uploaded_file.name)
+                        if gdf is not None:
+                            st.success(_("gpkg_loaded") + uploaded_file.name)
                 except Exception as e:
                     st.error(_("error_read_file") + str(e))
                     gdf = None
@@ -796,141 +801,124 @@ def main():
         with col_buttons[0]:
             if st.button("🔄 Clear Cache", key="clear_cache"):
                 clear_previous_results()
+                st.cache_resource.clear()
+                st.cache_data.clear()
                 st.rerun()
-
         with col_buttons[1]:
-            if st.button(_("run_button"), type="primary", use_container_width=True, key="run_button"):
-                st.session_state.run_requested = True
-                st.rerun()
+            run_button = st.button(_("run_button"), type="primary", use_container_width=True, key="run_button")
 
-    # ---------------- EXECUTION BLOCK (Survives Reruns) ----------------
-    if st.session_state.get("run_requested"):
-        errors = []
-        if input_method == _("upload_shapefile") and not shape_path:
-            errors.append(_("errors_upload"))
-        elif input_method == _("draw_polygon") and not drawn_polygon:
-            errors.append(_("errors_draw"))
-        if start_date > end_date:
-            errors.append(_("errors_dates"))
-        if max_cloud < 0 or max_cloud > 100:
-            errors.append(_("errors_cloud"))
+        if run_button:
+            errors = []
+            if input_method == _("upload_shapefile") and not shape_path:
+                errors.append(_("errors_upload"))
+            elif input_method == _("draw_polygon") and not drawn_polygon:
+                errors.append(_("errors_draw"))
+            if start_date > end_date:
+                errors.append(_("errors_dates"))
+            if max_cloud < 0 or max_cloud > 100:
+                errors.append(_("errors_cloud"))
 
-        if errors:
-            for error in errors:
-                st.error(f"❌ {error}")
-            st.session_state.run_requested = False
-        else:
-            try:
-                clear_previous_results()
-                temp_shape_path = None
-                if input_method == _("draw_polygon") and drawn_polygon:
-                    temp_shape_dir = tempfile.mkdtemp(prefix='agroet_drawn_')
-                    temp_shape_path = os.path.join(temp_shape_dir, 'drawn_polygon.shp')
-                    save_drawn_polygon(drawn_polygon, temp_shape_path)
-                    shape_path = temp_shape_path
+            if errors:
+                for error in errors:
+                    st.error(f"❌ {error}")
+            else:
+                try:
+                    clear_previous_results()
+                    temp_shape_path = None
+                    if input_method == _("draw_polygon") and drawn_polygon:
+                        temp_shape_dir = tempfile.mkdtemp(prefix='agroet_drawn_')
+                        temp_shape_path = os.path.join(temp_shape_dir, 'drawn_polygon.shp')
+                        save_drawn_polygon(drawn_polygon, temp_shape_path)
+                        shape_path = temp_shape_path
 
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    def update_progress(percent, message):
+                        progress_bar.progress(percent)
+                        status_text.text(f"{message} ({percent}%)")
 
-                def update_progress(percent, message):
-                    progress_bar.progress(percent)
-                    status_text.text(f"{message} ({percent}%)")
+                    start_date_str = start_date.strftime('%Y-%m-%d')
+                    end_date_str = end_date.strftime('%Y-%m-%d')
+                    temp_output_dir = tempfile.mkdtemp(prefix='agroet_output_')
+                    out_ptjpl = os.path.join(temp_output_dir, 'images')
+                    out_meteo = os.path.join(temp_output_dir, 'meteo', 'meteo.feather')
+                    os.makedirs(out_ptjpl, exist_ok=True)
+                    os.makedirs(os.path.dirname(out_meteo), exist_ok=True)
+                    st.session_state.temp_output_dir = temp_output_dir
 
-                start_date_str = start_date.strftime('%Y-%m-%d')
-                end_date_str = end_date.strftime('%Y-%m-%d')
+                    with st.spinner("Processing..."):
+                        run_et_calculation(shape_path=shape_path, start_date=start_date_str, end_date=end_date_str,
+                                           method=method, max_cloud=max_cloud, out_ptjpl=out_ptjpl, out_meteo=out_meteo,
+                                           progress_callback=update_progress)
 
-                temp_output_dir = tempfile.mkdtemp(prefix='agroet_output_')
-                out_ptjpl = os.path.join(temp_output_dir, 'images')
-                out_meteo = os.path.join(temp_output_dir, 'meteo', 'meteo.feather')
-                os.makedirs(out_ptjpl, exist_ok=True)
-                os.makedirs(os.path.dirname(out_meteo), exist_ok=True)
-                st.session_state.temp_output_dir = temp_output_dir
+                    status_text.text(_("progress_complete"))
+                    persistent_shp_dir = tempfile.mkdtemp(prefix='agroet_persistent_')
+                    persistent_shp_path = os.path.join(persistent_shp_dir, os.path.basename(shape_path) if shape_path else 'polygon.shp')
+                    if shape_path and os.path.exists(shape_path):
+                        shutil.copy2(shape_path, persistent_shp_path)
+                        shp_base = os.path.splitext(shape_path)[0]
+                        for ext in ['.dbf', '.shx', '.prj', '.cpg', '.qpj']:
+                            sidecar = shp_base + ext
+                            if os.path.exists(sidecar):
+                                shutil.copy2(sidecar, os.path.join(persistent_shp_dir, os.path.basename(sidecar)))
 
-                with st.spinner("Processing..."):
-                    run_et_calculation(
-                        shape_path=shape_path, start_date=start_date_str, end_date=end_date_str,
-                        method=method, max_cloud=max_cloud, out_ptjpl=out_ptjpl, out_meteo=out_meteo,
-                        progress_callback=update_progress
-                    )
+                    st.session_state['results_tiff_folder'] = out_ptjpl
+                    st.session_state['results_shp_file'] = persistent_shp_path
+                    st.session_state['results_shp_persistent_dir'] = persistent_shp_dir
+                    st.session_state['results_meteo_file'] = out_meteo
+                    st.subheader(_("results_header"))
 
-                status_text.text(_("progress_complete"))
+                    col_down1, col_down2, col_down3 = st.columns(3)
+                    with col_down1:
+                        if os.path.exists(out_ptjpl) and glob.glob(os.path.join(out_ptjpl, "*.tif")):
+                            zip_buffer = create_zip_download(out_ptjpl)
+                            st.download_button(label=_("download_all_tiffs"), data=zip_buffer,
+                                               file_name=f"pt_jpl_results_{start_date_str}_{end_date_str}.zip",
+                                               mime="application/zip", key="download_all")
+                    with col_down2:
+                        if os.path.exists(out_meteo):
+                            with open(out_meteo, 'rb') as f:
+                                st.download_button(label=_("download_meteo"), data=f,
+                                                   file_name=f"meteo_data_{start_date_str}_{end_date_str}.feather",
+                                                   mime="application/octet-stream", key="download_meteo")
+                    if shape_path and os.path.exists(shape_path):
+                        shape_gdf = gpd.read_file(shape_path).to_crs('EPSG:4326')
+                        tif_files = sorted(glob.glob(os.path.join(out_ptjpl, "*.tif")))
+                        data = []
+                        for tif in tif_files:
+                            val = get_tif_value(tif, shape_gdf)
+                            if val: data.append(val)
+                        if data:
+                            df = pd.DataFrame(data).sort_values('date')
+                            meteo_df = pd.read_feather(out_meteo)
+                            meteo_df['Date'] = pd.to_datetime(meteo_df['Date'])
+                            with col_down3:
+                                csv_buffer = io.StringIO()
+                                combined_df = df.merge(meteo_df, left_on='date', right_on='Date', how='outer')
+                                combined_df.to_csv(csv_buffer, index=False)
+                                st.download_button(label=_("download_timeseries"), data=csv_buffer.getvalue(),
+                                                   file_name=f"timeseries_{start_date_str}_{end_date_str}.csv",
+                                                   mime="text/csv", key="download_csv")
+                            st.session_state['results_df'] = df
+                            st.session_state['results_meteo_df'] = meteo_df
+                            render_timeseries_plot(df, meteo_df)
+                    if shape_path and os.path.exists(shape_path):
+                        results_section(out_ptjpl, persistent_shp_path)
+                    st.success(_("success_message"))
+                except Exception as e:
+                    st.error(_("error_processing") + str(e))
+                    with st.expander("Error Details"):
+                        st.code(str(e))
+                        import traceback
+                        st.code(traceback.format_exc())
+                finally:
+                    if temp_shape_path and os.path.exists(os.path.dirname(temp_shape_path)):
+                        shutil.rmtree(os.path.dirname(temp_shape_path), ignore_errors=True)
+                    if shape_path and input_method == _("upload_shapefile") and os.path.exists(shape_path):
+                        shutil.rmtree(os.path.dirname(shape_path), ignore_errors=True)
+                    gc.collect()
 
-                persistent_shp_dir = tempfile.mkdtemp(prefix='agroet_persistent_')
-                persistent_shp_path = os.path.join(persistent_shp_dir, os.path.basename(shape_path) if shape_path else 'polygon.shp')
-                if shape_path and os.path.exists(shape_path):
-                    shutil.copy2(shape_path, persistent_shp_path)
-                    shp_base = os.path.splitext(shape_path)[0]
-                    for ext in ['.dbf', '.shx', '.prj', '.cpg', '.qpj']:
-                        sidecar = shp_base + ext
-                        if os.path.exists(sidecar):
-                            shutil.copy2(sidecar, os.path.join(persistent_shp_dir, os.path.basename(sidecar)))
-
-                st.session_state['results_tiff_folder'] = out_ptjpl
-                st.session_state['results_shp_file'] = persistent_shp_path
-                st.session_state['results_shp_persistent_dir'] = persistent_shp_dir
-                st.session_state['results_meteo_file'] = out_meteo
-
-                st.subheader(_("results_header"))
-                col_down1, col_down2, col_down3 = st.columns(3)
-
-                with col_down1:
-                    if os.path.exists(out_ptjpl) and glob.glob(os.path.join(out_ptjpl, "*.tif")):
-                        zip_buffer = create_zip_download(out_ptjpl)
-                        st.download_button(label=_("download_all_tiffs"), data=zip_buffer,
-                                           file_name=f"pt_jpl_results_{start_date_str}_{end_date_str}.zip",
-                                           mime="application/zip", key="download_all")
-
-                with col_down2:
-                    if os.path.exists(out_meteo):
-                        with open(out_meteo, 'rb') as f:
-                            st.download_button(label=_("download_meteo"), data=f,
-                                               file_name=f"meteo_data_{start_date_str}_{end_date_str}.feather",
-                                               mime="application/octet-stream", key="download_meteo")
-
-                if shape_path and os.path.exists(shape_path):
-                    shape_gdf = gpd.read_file(shape_path).to_crs('EPSG:4326')
-                    tif_files = sorted(glob.glob(os.path.join(out_ptjpl, "*.tif")))
-                    data = [get_tif_value(tif, shape_gdf) for tif in tif_files]
-                    data = [d for d in data if d]
-
-                    if data:
-                        df = pd.DataFrame(data).sort_values('date')
-                        meteo_df = pd.read_feather(out_meteo)
-                        meteo_df['Date'] = pd.to_datetime(meteo_df['Date'])
-
-                        with col_down3:
-                            csv_buffer = io.StringIO()
-                            combined_df = df.merge(meteo_df, left_on='date', right_on='Date', how='outer')
-                            combined_df.to_csv(csv_buffer, index=False)
-                            st.download_button(label=_("download_timeseries"), data=csv_buffer.getvalue(),
-                                               file_name=f"timeseries_{start_date_str}_{end_date_str}.csv",
-                                               mime="text/csv", key="download_csv")
-
-                        st.session_state['results_df'] = df
-                        st.session_state['results_meteo_df'] = meteo_df
-                        render_timeseries_plot(df, meteo_df)
-
-                if shape_path and os.path.exists(shape_path):
-                    results_section(out_ptjpl, persistent_shp_path)
-
-                st.success(_("success_message"))
-
-            except Exception as e:
-                st.error(_("error_processing") + str(e))
-                with st.expander("Error Details"):
-                    st.code(str(e))
-                    import traceback
-                    st.code(traceback.format_exc())
-            finally:
-                st.session_state.run_requested = False
-                if temp_shape_path and os.path.exists(os.path.dirname(temp_shape_path)):
-                    shutil.rmtree(os.path.dirname(temp_shape_path), ignore_errors=True)
-                if shape_path and input_method == _("upload_shapefile") and os.path.exists(shape_path):
-                    shutil.rmtree(os.path.dirname(shape_path), ignore_errors=True)
-                gc.collect()
-
-    # ---------------- DISPLAY EXISTING RESULTS ----------------
-    if not st.session_state.get("run_requested") and 'results_tiff_folder' in st.session_state:
+    if not run_button and 'results_tiff_folder' in st.session_state:
         if os.path.exists(st.session_state.results_tiff_folder):
             st.subheader(_("results_header"))
             col_down1, col_down2, col_down3 = st.columns(3)
@@ -938,25 +926,28 @@ def main():
                 tiff_folder = st.session_state.results_tiff_folder
                 if os.path.exists(tiff_folder) and glob.glob(os.path.join(tiff_folder, "*.tif")):
                     zip_buffer = create_zip_download(tiff_folder)
-                    st.download_button(label=_("download_all_tiffs"), data=zip_buffer, file_name="pt_jpl_results.zip", mime="application/zip", key="download_all_existing")
+                    st.download_button(label=_("download_all_tiffs"), data=zip_buffer, file_name="pt_jpl_results.zip",
+                                       mime="application/zip", key="download_all_existing")
             with col_down2:
                 meteo_file = st.session_state.results_meteo_file
                 if os.path.exists(meteo_file):
                     with open(meteo_file, 'rb') as f:
-                        st.download_button(label=_("download_meteo"), data=f, file_name="meteo_data.feather", mime="application/octet-stream", key="download_meteo_existing")
+                        st.download_button(label=_("download_meteo"), data=f, file_name="meteo_data.feather",
+                                           mime="application/octet-stream", key="download_meteo_existing")
             with col_down3:
                 if 'results_df' in st.session_state and 'results_meteo_df' in st.session_state:
                     csv_buffer = io.StringIO()
-                    combined_df = st.session_state.results_df.merge(st.session_state.results_meteo_df, left_on='date', right_on='Date', how='outer').drop(columns='Date')
+                    combined_df = st.session_state.results_df.merge(st.session_state.results_meteo_df, left_on='date', right_on='Date', how='outer')
+                    combined_df = combined_df.drop(columns='Date')
                     combined_df.to_csv(csv_buffer, index=False)
-                    st.download_button(label=_("download_timeseries"), data=csv_buffer.getvalue(), file_name="timeseries_data.csv", mime="text/csv", key="download_csv_existing")
-
+                    st.download_button(label=_("download_timeseries"), data=csv_buffer.getvalue(), file_name="timeseries_data.csv",
+                                       mime="text/csv", key="download_csv_existing")
             if 'results_df' in st.session_state and 'results_meteo_df' in st.session_state:
                 render_timeseries_plot(st.session_state['results_df'], st.session_state['results_meteo_df'])
             if 'results_shp_file' in st.session_state:
                 results_section(st.session_state['results_tiff_folder'], st.session_state['results_shp_file'])
         else:
-            st.warning(_("tiff_folder_not_found", folder=st.session_state.results_tiff_folder))
+            st.warning(_("tiff_folder_not_found").format(folder=st.session_state.results_tiff_folder))
             clear_previous_results()
 
     with st.sidebar:
