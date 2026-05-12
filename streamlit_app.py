@@ -24,6 +24,12 @@ def _(key, **kwargs):
 
 def main():
     st.set_page_config(page_title=_("page_title"), page_icon=_("page_icon"), layout="wide")
+
+    if st.query_params.get('_clear_cache') or st.query_params.get('cache_clear'):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
+
     with st.sidebar:
         lang = st.selectbox(_("language_selector"), options=["en", "ru"],
                             format_func=lambda x: TRANSLATIONS[x]["en" if x == "en" else "ru"],
