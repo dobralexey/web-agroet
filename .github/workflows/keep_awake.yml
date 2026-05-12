@@ -1,0 +1,80 @@
+name: Keep Streamlit Awake with Browser Simulation
+
+on:
+  schedule:
+    - cron: '*/1 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-awake:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install requests
+          
+      - name: Create keep-alive script
+        run: |
+          cat > keep_awake.py << 'EOF'
+          import requests
+          import time
+          from datetime import datetime
+
+          def ping_streamlit_app():
+              url = "https://agroet.streamlit.app"
+              headers = {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                  'Accept-Language': 'en-US,en;q=0.5',
+                  'Cache-Control': 'no-cache'
+              }
+              
+              try:
+                  # First request to establish session
+                  session = requests.Session()
+                  response = session.get(url, headers=headers, timeout=30)
+                  
+                  print(f"[{datetime.now()}] Initial request status: {response.status_code}")
+                  print(f"[{datetime.now()}] Response length: {len(response.text)}")
+                  
+                  # Check if the app is sleeping
+                  if "sleeping" in response.text.lower() or response.status_code == 403:
+                      print(f"[{datetime.now()}] App appears to be sleeping, waking it up...")
+                      # Wait and retry
+                      time.sleep(10)
+                      response = session.get(url, headers=headers, timeout=30)
+                      print(f"[{datetime.now()}] Retry status: {response.status_code}")
+                  
+                  # Make additional requests to simulate user interaction
+                  if response.status_code == 200:
+                      # Get any resources/scripts that might be loaded
+                      import re
+                      script_urls = re.findall(r'src="([^"]+\.js)"', response.text)
+                      for script_url in script_urls[:3]:  # Limit to first 3 scripts
+                          if script_url.startswith('/'):
+                              full_url = url + script_url
+                              script_response = session.get(full_url, headers=headers, timeout=10)
+                              print(f"[{datetime.now()}] Script {script_url} status: {script_response.status_code}")
+                  
+                  return True
+                  
+              except Exception as e:
+                  print(f"[{datetime.now()}] Error: {str(e)}")
+                  return False
+
+          if __name__ == "__main__":
+              success = ping_streamlit_app()
+              if success:
+                  print(f"[{datetime.now()}] ✅ Keep-alive ping completed successfully")
+              else:
+                  print(f"[{datetime.now()}] ❌ Keep-alive ping failed")
+          EOF
+          
+      - name: Run keep-alive script
+        run: python keep_awake.py
