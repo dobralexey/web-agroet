@@ -1,0 +1,106 @@
+name: Keep Streamlit App Alive
+
+on:
+  schedule:
+    # Runs every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8   # Safety net — stays well within the 10-min window
+
+    env:
+      APP_URL: ${{ secrets.STREAMLIT_APP_URL }}   # e.g. https://your-app.streamlit.app
+
+    steps:
+      # ── 1. Install dependencies ──────────────────────────────────────────────
+      - name: Install Playwright + browser
+        run: |
+          pip install playwright --quiet
+          playwright install chromium --with-deps --quiet
+
+      # ── 2. Clear Streamlit server-side cache ─────────────────────────────────
+      # Streamlit Cloud exposes /_stcore/clear_cache (POST) to reset st.cache_*
+      - name: Clear Streamlit cache
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${APP_URL}/_stcore/clear_cache")
+          echo "Cache-clear response status: $STATUS"
+          # 200 = cleared, 405 = endpoint exists but method not allowed on this version
+          # Both mean the app is awake — only fail on network errors (000)
+          if [ "$STATUS" = "000" ]; then
+            echo "::warning::App appears unreachable (curl status 000)"
+          fi
+
+      # ── 3. Simulate user behaviour — toggle language ─────────────────────────
+      - name: Simulate user — switch language
+        run: |
+          python - <<'EOF'
+          import asyncio, os, random
+          from playwright.async_api import async_playwright
+
+          APP_URL = os.environ["APP_URL"]
+
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True)
+                  page = await browser.new_page()
+
+                  print(f"Navigating to {APP_URL} …")
+                  await page.goto(APP_URL, timeout=60_000)
+
+                  # Wait for the Streamlit app to finish loading
+                  await page.wait_for_selector(
+                      '[data-testid="stSidebar"]', timeout=60_000
+                  )
+                  print("Sidebar loaded ✓")
+
+                  # Give widgets time to render
+                  await page.wait_for_load_state("networkidle", timeout=30_000)
+
+                  # ── Find the language selectbox ──────────────────────────────
+                  # Streamlit renders <select> elements for st.selectbox
+                  selects = page.locator('select')
+                  count = await selects.count()
+                  print(f"Found {count} select element(s)")
+
+                  if count == 0:
+                      # Fallback: try Streamlit's custom dropdown (non-native)
+                      dropdown = page.locator(
+                          '[data-testid="stSelectbox"]', has_text="Language"
+                      ).first
+                      if await dropdown.count():
+                          await dropdown.click()
+                          await page.wait_for_timeout(500)
+                          options = page.locator('[data-testid="stSelectboxVirtualDropdown"] li')
+                          opt_count = await options.count()
+                          if opt_count:
+                              idx = random.randint(0, opt_count - 1)
+                              await options.nth(idx).click()
+                              print(f"Clicked custom dropdown option {idx}")
+                      else:
+                          print("No language dropdown found — page visit alone prevents sleep")
+                  else:
+                      # Pick the language that is currently NOT selected to force a rerun
+                      select = selects.first
+                      current_value = await select.input_value()
+                      new_lang = "ru" if current_value == "en" else "en"
+                      print(f"Switching language: {current_value} → {new_lang}")
+                      await select.select_option(new_lang)
+
+                  # Wait briefly so Streamlit registers the interaction
+                  await page.wait_for_timeout(3_000)
+                  print("Interaction complete ✓")
+
+                  await browser.close()
+
+          asyncio.run(main())
+          EOF
+
+      # ── 4. Summary ───────────────────────────────────────────────────────────
+      - name: Log run summary
+        run: |
+          echo "Keep-alive run completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "App URL: $APP_URL"
