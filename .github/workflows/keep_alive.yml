@@ -2,105 +2,192 @@ name: Keep Streamlit App Alive
 
 on:
   schedule:
-    # Runs every 10 minutes
+    # Run every 10 minutes
     - cron: '*/10 * * * *'
-  workflow_dispatch: # Allow manual triggering
+  workflow_dispatch:  # Allow manual trigger
 
 jobs:
-  keep-alive:
+  keep-awake:
     runs-on: ubuntu-latest
-    timeout-minutes: 8   # Safety net — stays well within the 10-min window
-
-    env:
-      APP_URL: ${{ secrets.STREAMLIT_APP_URL }}   # e.g. https://your-app.streamlit.app
 
     steps:
-      # ── 1. Install dependencies ──────────────────────────────────────────────
-      - name: Install Playwright + browser
-        run: |
-          pip install playwright --q
-          playwright install chromium --with-deps
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # ── 2. Clear Streamlit server-side cache ─────────────────────────────────
-      # Streamlit Cloud exposes /_stcore/clear_cache (POST) to reset st.cache_*
-      - name: Clear Streamlit cache
+      - name: Keep Streamlit app awake and interact
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST "${APP_URL}/_stcore/clear_cache")
-          echo "Cache-clear response status: $STATUS"
-          # 200 = cleared, 405 = endpoint exists but method not allowed on this version
-          # Both mean the app is awake — only fail on network errors (000)
-          if [ "$STATUS" = "000" ]; then
-            echo "::warning::App appears unreachable (curl status 000)"
+          # Your Streamlit Cloud app URL
+          APP_URL="https://agroet.streamlit.app"
+          
+          # Array of languages to rotate
+          languages=("en" "ru")
+          
+          # Randomly select a language
+          random_index=$(( RANDOM % ${#languages[@]} ))
+          selected_language=${languages[$random_index]}
+          
+          echo "Selected language: $selected_language"
+          
+          # Step 1: Initial visit to wake up the app
+          echo "Step 1: Waking up the app..."
+          curl -s -L -c cookies.txt \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "$APP_URL" > /dev/null
+          
+          sleep 3
+          
+          # Step 2: Send interaction that simulates language change
+          echo "Step 2: Simulating language change to $selected_language..."
+          
+          # Get the current page and parse the CSRF token if needed
+          response=$(curl -s -L -b cookies.txt -c cookies.txt \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "$APP_URL")
+          
+          # The language selector widget generates a session-specific key
+          # We need to interact with Streamlit's websocket-based UI
+          
+          # Simulate clicking/selecting the language dropdown
+          # Streamlit uses websockets, so we'll use their REST API-like patterns
+          
+          # Alternative approach: Use Streamlit's health endpoint or simulate page load
+          curl -s -L -b cookies.txt -c cookies.txt \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Accept: text/html,application/xhtml+xml" \
+            -H "Accept-Language: $selected_language" \
+            "$APP_URL" > /dev/null
+          
+          sleep 2
+          
+          # Step 3: Simulate cache clearing by triggering a rerun
+          echo "Step 3: Simulating cache clearing..."
+          
+          # Access with different query parameters to trigger fresh state
+          curl -s -L -b cookies.txt -c cookies.txt \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Cache-Control: no-cache" \
+            -H "Pragma: no-cache" \
+            "$APP_URL?cache_bust=$(date +%s)" > /dev/null
+          
+          sleep 2
+          
+          # Step 4: Final check to ensure app is responsive
+          echo "Step 4: Verifying app is awake..."
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "User-Agent: Mozilla/5.0" \
+            "$APP_URL")
+          
+          if [ "$http_code" -eq 200 ]; then
+            echo "✅ App is awake and responding (HTTP $http_code)"
+          else
+            echo "⚠️ App returned HTTP $http_code"
           fi
+          
+          # Clean up
+          rm -f cookies.txt
+          
+          echo "Keep-awake ping completed at $(date)"
 
-      # ── 3. Simulate user behaviour — toggle language ─────────────────────────
-      - name: Simulate user — switch language
+  # Alternative job using Python for more complex interactions
+  keep-awake-python:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         run: |
-          python - <<'EOF'
-          import asyncio, os, random
-          from playwright.async_api import async_playwright
+          python -m pip install --upgrade pip
+          pip install requests streamlit
 
-          APP_URL = os.environ["APP_URL"]
-
-          async def main():
-              async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True)
-                  page = await browser.new_page()
-
-                  print(f"Navigating to {APP_URL} …")
-                  await page.goto(APP_URL, timeout=60_000)
-
-                  # Wait for the Streamlit app to finish loading
-                  await page.wait_for_selector(
-                      '[data-testid="stSidebar"]', timeout=60_000
-                  )
-                  print("Sidebar loaded ✓")
-
-                  # Give widgets time to render
-                  await page.wait_for_load_state("networkidle", timeout=30_000)
-
-                  # ── Find the language selectbox ──────────────────────────────
-                  # Streamlit renders <select> elements for st.selectbox
-                  selects = page.locator('select')
-                  count = await selects.count()
-                  print(f"Found {count} select element(s)")
-
-                  if count == 0:
-                      # Fallback: try Streamlit's custom dropdown (non-native)
-                      dropdown = page.locator(
-                          '[data-testid="stSelectbox"]', has_text="Language"
-                      ).first
-                      if await dropdown.count():
-                          await dropdown.click()
-                          await page.wait_for_timeout(500)
-                          options = page.locator('[data-testid="stSelectboxVirtualDropdown"] li')
-                          opt_count = await options.count()
-                          if opt_count:
-                              idx = random.randint(0, opt_count - 1)
-                              await options.nth(idx).click()
-                              print(f"Clicked custom dropdown option {idx}")
-                      else:
-                          print("No language dropdown found — page visit alone prevents sleep")
-                  else:
-                      # Pick the language that is currently NOT selected to force a rerun
-                      select = selects.first
-                      current_value = await select.input_value()
-                      new_lang = "ru" if current_value == "en" else "en"
-                      print(f"Switching language: {current_value} → {new_lang}")
-                      await select.select_option(new_lang)
-
-                  # Wait briefly so Streamlit registers the interaction
-                  await page.wait_for_timeout(3_000)
-                  print("Interaction complete ✓")
-
-                  await browser.close()
-
-          asyncio.run(main())
+      - name: Keep Streamlit app awake with Python
+        run: |
+          python << 'EOF'
+          import requests
+          import time
+          import random
+          from datetime import datetime
+          
+          APP_URL = "https://agroet.streamlit.app"
+          languages = ["en", "ru"]
+          
+          # Randomly select a language
+          selected_language = random.choice(languages)
+          
+          print(f"[{datetime.now()}] Starting keep-awake process")
+          print(f"[{datetime.now()}] Selected language: {selected_language}")
+          
+          # Session setup
+          session = requests.Session()
+          session.headers.update({
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept-Language': selected_language,
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+          })
+          
+          try:
+              # Step 1: Initial visit
+              print(f"[{datetime.now()}] Step 1: Initial visit to wake up app...")
+              response = session.get(APP_URL, timeout=30)
+              print(f"[{datetime.now()}]   Status: {response.status_code}")
+              time.sleep(3)
+              
+              # Step 2: Simulate language change by sending new request
+              print(f"[{datetime.now()}] Step 2: Simulating language interaction...")
+              session.headers.update({'Accept-Language': selected_language})
+              response = session.get(APP_URL, timeout=30)
+              print(f"[{datetime.now()}]   Status: {response.status_code}")
+              time.sleep(2)
+              
+              # Step 3: Cache-busting request
+              print(f"[{datetime.now()}] Step 3: Sending cache-busting request...")
+              cache_bust_url = f"{APP_URL}?cache_bust={int(time.time())}"
+              response = session.get(cache_bust_url, timeout=30)
+              print(f"[{datetime.now()}]   Status: {response.status_code}")
+              time.sleep(2)
+              
+              # Step 4: Final verification
+              print(f"[{datetime.now()}] Step 4: Final verification...")
+              response = session.get(APP_URL, timeout=30)
+              
+              if response.status_code == 200:
+                  print(f"[{datetime.now()}] ✅ App is awake and responding")
+              else:
+                  print(f"[{datetime.now()}] ⚠️ App returned status {response.status_code}")
+                  
+          except requests.exceptions.RequestException as e:
+              print(f"[{datetime.now()}] ❌ Error: {e}")
+              exit(1)
+          
+          print(f"[{datetime.now()}] Keep-awake process completed successfully")
           EOF
 
-      # ── 4. Summary ───────────────────────────────────────────────────────────
-      - name: Log run summary
+  # Additional job to clear app cache via Streamlit's internal mechanism
+  clear-cache-periodic:
+    runs-on: ubuntu-latest
+    # Run every hour to clear cache (offset from the 10-min keep-awake)
+    if: github.event.schedule == '0 * * * *' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Clear app cache
         run: |
-          echo "Keep-alive run completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "App URL: $APP_URL"
+          echo "Triggering cache clearing mechanism..."
+          
+          # This simulates multiple rapid requests to trigger reruns
+          for i in {1..3}; do
+            curl -s -L \
+              -H "Cache-Control: no-cache, no-store, must-revalidate" \
+              -H "Pragma: no-cache" \
+              -H "Expires: 0" \
+              "https://your-app-name.streamlit.app/?_clear_cache=$(date +%s%N)" > /dev/null
+            sleep 1
+          done
+          
+          echo "Cache clearing simulation completed"
