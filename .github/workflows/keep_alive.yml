@@ -186,7 +186,7 @@ jobs:
               -H "Cache-Control: no-cache, no-store, must-revalidate" \
               -H "Pragma: no-cache" \
               -H "Expires: 0" \
-              "https://your-app-name.streamlit.app/?_clear_cache=$(date +%s%N)" > /dev/null
+              "https://agroet.streamlit.app/?_clear_cache=$(date +%s%N)" > /dev/null
             sleep 1
           done
           
