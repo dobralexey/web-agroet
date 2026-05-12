@@ -1,5 +1,4 @@
 name: Keep Streamlit App Awake (Advanced)
-
 on:
   schedule:
     - cron: '*/10 * * * *'
@@ -8,7 +7,6 @@ on:
 jobs:
   keep-awake:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
