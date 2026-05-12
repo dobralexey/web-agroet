@@ -922,7 +922,7 @@ def main():
         # Добавляем кнопку очистки для отладки
         col_buttons = st.columns(2)
         with col_buttons[0]:
-            if st.button("🔄 Clear Cache", key="clear_cache"):
+            if st.button("Clear Cache", key="clear_cache"):
                 clear_previous_results()
                 st.cache_resource.clear()
                 st.cache_data.clear()
