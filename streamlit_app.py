@@ -120,19 +120,47 @@ def main():
         st.markdown("---")
         run_button = st.button(_("run_button"), type="primary", use_container_width=True)
         if run_button:
+            st.session_state['_run_requested'] = True
+            st.session_state['_run_input_method'] = input_method
+            st.session_state['_run_shape_path'] = shape_path
+            st.session_state['_run_drawn_polygon'] = drawn_polygon
+            st.session_state['_run_start_date'] = start_date
+            st.session_state['_run_end_date'] = end_date
+            st.session_state['_run_method'] = method
+            st.session_state['_run_max_cloud'] = max_cloud
+
+        if st.session_state.get('_run_requested'):
+            # Read parameters saved at button-press time so they survive GEE-init reruns
+            _input_method = st.session_state.get('_run_input_method', input_method)
+            _shape_path = st.session_state.get('_run_shape_path', shape_path)
+            _drawn_polygon = st.session_state.get('_run_drawn_polygon', drawn_polygon)
+            _start_date = st.session_state.get('_run_start_date', start_date)
+            _end_date = st.session_state.get('_run_end_date', end_date)
+            _method = st.session_state.get('_run_method', method)
+            _max_cloud = st.session_state.get('_run_max_cloud', max_cloud)
+
             errors = []
-            if input_method == _("upload_shapefile") and not shape_path:
+            if _input_method == _("upload_shapefile") and not _shape_path:
                 errors.append(_("errors_upload"))
-            elif input_method == _("draw_polygon") and not drawn_polygon:
+            elif _input_method == _("draw_polygon") and not _drawn_polygon:
                 errors.append(_("errors_draw"))
-            if start_date > end_date:
+            if _start_date > _end_date:
                 errors.append(_("errors_dates"))
-            if max_cloud < 0 or max_cloud > 100:
+            if _max_cloud < 0 or _max_cloud > 100:
                 errors.append(_("errors_cloud"))
             if errors:
+                st.session_state['_run_requested'] = False
                 for error in errors:
                     st.error(f"❌ {error}")
             else:
+                # Assign to local vars for the rest of the block
+                input_method = _input_method
+                shape_path = _shape_path
+                drawn_polygon = _drawn_polygon
+                start_date = _start_date
+                end_date = _end_date
+                method = _method
+                max_cloud = _max_cloud
                 temp_shape_path = None
                 if input_method == _("draw_polygon") and drawn_polygon:
                     temp_shape_dir = tempfile.mkdtemp(prefix='agroet_drawn_')
@@ -243,13 +271,15 @@ def main():
                 except Exception as e:
                     st.error(_("error_processing") + str(e))
                 finally:
+                    # Always clear the run flag so it doesn't re-trigger on next rerun
+                    st.session_state['_run_requested'] = False
                     if temp_shape_path and os.path.exists(os.path.dirname(temp_shape_path)):
                         shutil.rmtree(os.path.dirname(temp_shape_path), ignore_errors=True)
                     if shape_path and input_method == _("upload_shapefile") and os.path.exists(shape_path):
                         shutil.rmtree(os.path.dirname(shape_path), ignore_errors=True)
 
-        # Display results if they exist in session state
-        if not run_button and 'results_tiff_folder' in st.session_state and 'results_shp_file' in st.session_state:
+        # Display results if they exist in session state and no run is currently in progress
+        if not st.session_state.get('_run_requested') and not run_button and 'results_tiff_folder' in st.session_state and 'results_shp_file' in st.session_state:
             # Check if the results folder still exists
             if os.path.exists(st.session_state.results_tiff_folder):
                 st.subheader(_("results_header"))
